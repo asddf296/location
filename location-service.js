@@ -1,12 +1,15 @@
 // location-service.js
-// 位置信息服务 - 完整修复版
+// 位置精灵 - 位置信息服务 (LocationSprite)
 
 // ========== 配置 ==========
 const SUPABASE_CONFIG = {
     url: 'https://lmkfbtdvuvlrgtandcrp.supabase.co',
-    key: 'sb_publishable_ApptYpHwXHkEgpc-qwhSHg_BuOfqLYp', // 修正了key大小写
+    key: 'sb_publishable_ApptYpHwXHkEgpc-qwhSHg_BuOfqLYp',
     table: 'user_locations'
 };
+
+// 密码配置
+const DATABASE_PASSWORD = '70710wangnaijian';
 
 // ========== 全局变量 ==========
 let supabaseClient = null;
@@ -14,9 +17,8 @@ let map = null;
 let marker = null;
 let currentLocation = null;
 let isDbConnected = false;
-
-// ========== DOM 元素缓存 ==========
-const elements = {};
+let isPasswordVerified = false;
+let autoSaveEnabled = true; // 启用自动保存
 
 // ========== 工具函数 ==========
 function show(el) {
@@ -52,19 +54,40 @@ function updateDbStatus(message, type = 'connecting') {
     }
 }
 
+// ========== 密码验证功能 ==========
+function showPasswordModal() {
+    const modal = document.getElementById('passwordModal');
+    const passwordInput = document.getElementById('passwordInput');
+    const passwordError = document.getElementById('passwordError');
+    
+    // 重置状态
+    passwordInput.value = '';
+    passwordError.textContent = '';
+    passwordInput.classList.remove('error');
+    
+    show(modal);
+    passwordInput.focus();
+}
+
+function hidePasswordModal() {
+    hide(document.getElementById('passwordModal'));
+}
+
+function verifyPassword(password) {
+    return password === DATABASE_PASSWORD;
+}
+
 // ========== Supabase 初始化 ==========
 function initSupabase() {
     console.log('正在初始化 Supabase...');
     
     try {
-        // 检查 Supabase 库是否加载
         if (typeof window.supabase === 'undefined') {
             console.error('Supabase 库未加载');
             updateDbStatus('Supabase 库未加载', 'disconnected');
             return false;
         }
         
-        // 创建 Supabase 客户端
         supabaseClient = window.supabase.createClient(
             SUPABASE_CONFIG.url, 
             SUPABASE_CONFIG.key,
@@ -81,7 +104,6 @@ function initSupabase() {
         updateDbStatus('数据库连接成功', 'connected');
         isDbConnected = true;
         
-        // 测试连接
         testSupabaseConnection();
         
         return true;
@@ -139,10 +161,16 @@ function showMainPage() {
 }
 
 function showDatabasePage() {
-    console.log('切换到数据库页面');
-    hide(document.getElementById('mainPage'));
-    show(document.getElementById('databasePage'));
-    loadDatabaseData();
+    // 如果密码已验证，直接显示数据库页面
+    if (isPasswordVerified) {
+        console.log('密码已验证，切换到数据库页面');
+        hide(document.getElementById('mainPage'));
+        show(document.getElementById('databasePage'));
+        loadDatabaseData();
+    } else {
+        // 否则显示密码验证模态框
+        showPasswordModal();
+    }
 }
 
 // ========== 位置状态管理 ==========
@@ -178,7 +206,7 @@ function getLocation() {
     
     navigator.geolocation.getCurrentPosition(
         // 成功回调
-        function(position) {
+        async function(position) {
             console.log('✅ 位置获取成功:', position);
             
             const lat = position.coords.latitude.toFixed(6);
@@ -196,14 +224,6 @@ function getLocation() {
             // 更新地图
             updateMap(lat, lng, accuracy);
             
-            // 启用按钮
-            const saveLocationBtn = document.getElementById('saveLocationBtn');
-            const shareLocationBtn = document.getElementById('shareLocationBtn');
-            
-            saveLocationBtn.disabled = false;
-            saveLocationBtn.innerHTML = '<i class="fas fa-save"></i> 保存到数据库';
-            shareLocationBtn.disabled = false;
-            
             // 保存当前位置数据
             currentLocation = {
                 latitude: parseFloat(lat),
@@ -217,7 +237,16 @@ function getLocation() {
             
             console.log('当前位置数据:', currentLocation);
             
+            // 显示成功状态
             showState('success');
+            
+            // 自动保存到数据库
+            if (autoSaveEnabled && supabaseClient) {
+                await autoSaveLocation();
+            }
+            
+            // 启用分享按钮
+            document.getElementById('shareLocationBtn').disabled = false;
         },
         
         // 失败回调
@@ -255,6 +284,56 @@ function getLocation() {
             maximumAge: 0
         }
     );
+}
+
+// ========== 自动保存功能 ==========
+async function autoSaveLocation() {
+    console.log('开始自动保存位置...');
+    
+    if (!currentLocation) {
+        console.warn('没有当前位置数据，无法自动保存');
+        return false;
+    }
+    
+    if (!supabaseClient) {
+        console.warn('数据库未连接，无法自动保存');
+        return false;
+    }
+    
+    try {
+        console.log('自动保存数据到数据库:', currentLocation);
+        
+        const { data, error } = await supabaseClient
+            .from(SUPABASE_CONFIG.table)
+            .insert([currentLocation])
+            .select();
+        
+        if (error) {
+            throw new Error(`数据库错误: ${error.message} (代码: ${error.code})`);
+        }
+        
+        console.log('✅ 位置自动保存成功:', data);
+        
+        // 更新成功状态消息
+        const successStatus = document.querySelector('#successState .status');
+        if (successStatus) {
+            successStatus.innerHTML = '<i class="fas fa-check-circle"></i> 位置获取成功！已自动保存到数据库';
+        }
+        
+        return true;
+        
+    } catch (error) {
+        console.error('❌ 自动保存位置失败:', error);
+        
+        // 更新成功状态消息
+        const successStatus = document.querySelector('#successState .status');
+        if (successStatus) {
+            successStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 位置获取成功！但自动保存失败';
+            successStatus.className = 'status status-warning';
+        }
+        
+        return false;
+    }
 }
 
 // ========== 地图功能 ==========
@@ -326,58 +405,6 @@ function getAddress(lat, lng) {
 }
 
 // ========== 数据库操作 ==========
-async function saveLocationToDatabase() {
-    console.log('保存位置到数据库...');
-    
-    if (!currentLocation) {
-        alert('请先获取位置');
-        return;
-    }
-    
-    if (!supabaseClient) {
-        alert('数据库未连接，无法保存位置');
-        return;
-    }
-    
-    const saveLocationBtn = document.getElementById('saveLocationBtn');
-    saveLocationBtn.disabled = true;
-    saveLocationBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
-    
-    try {
-        console.log('发送数据到数据库:', currentLocation);
-        
-        const { data, error } = await supabaseClient
-            .from(SUPABASE_CONFIG.table)
-            .insert([currentLocation])
-            .select();
-        
-        if (error) {
-            throw new Error(`数据库错误: ${error.message} (代码: ${error.code})`);
-        }
-        
-        console.log('✅ 位置保存成功:', data);
-        
-        saveLocationBtn.innerHTML = '<i class="fas fa-check"></i> 保存成功';
-        saveLocationBtn.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
-        
-        setTimeout(() => {
-            saveLocationBtn.innerHTML = '<i class="fas fa-save"></i> 保存到数据库';
-            saveLocationBtn.disabled = false;
-            saveLocationBtn.style.background = '';
-        }, 3000);
-        
-        alert('位置已成功保存到数据库！');
-        
-    } catch (error) {
-        console.error('❌ 保存位置失败:', error);
-        
-        saveLocationBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 保存失败';
-        saveLocationBtn.disabled = false;
-        
-        alert(`保存失败: ${error.message}\n请检查数据库连接和表结构。`);
-    }
-}
-
 async function loadDatabaseData() {
     console.log('加载数据库数据...');
     
@@ -605,22 +632,62 @@ function shareLocation() {
 function setupEventListeners() {
     console.log('设置事件监听器...');
     
+    // 页面切换
     document.getElementById('viewLocationsBtn').addEventListener('click', showDatabasePage);
     document.getElementById('backToMainBtn').addEventListener('click', showMainPage);
     document.getElementById('goToMainBtn').addEventListener('click', showMainPage);
+    
+    // 数据库操作
     document.getElementById('refreshDataBtn').addEventListener('click', loadDatabaseData);
     document.getElementById('clearAllBtn').addEventListener('click', clearAllData);
+    
+    // 位置获取 - 核心功能
     document.getElementById('getLocationBtn').addEventListener('click', getLocation);
     document.getElementById('retryPermissionBtn').addEventListener('click', getLocation);
-    document.getElementById('saveLocationBtn').addEventListener('click', saveLocationToDatabase);
+    
+    // 位置操作
     document.getElementById('shareLocationBtn').addEventListener('click', shareLocation);
+    
+    // 密码验证
+    document.getElementById('passwordSubmitBtn').addEventListener('click', function() {
+        const passwordInput = document.getElementById('passwordInput');
+        const passwordError = document.getElementById('passwordError');
+        const password = passwordInput.value.trim();
+        
+        if (verifyPassword(password)) {
+            isPasswordVerified = true;
+            hidePasswordModal();
+            // 密码验证通过后显示数据库页面
+            hide(document.getElementById('mainPage'));
+            show(document.getElementById('databasePage'));
+            loadDatabaseData();
+        } else {
+            passwordError.textContent = '密码错误，请重新输入';
+            passwordInput.classList.add('error');
+            passwordInput.value = '';
+            passwordInput.focus();
+            
+            // 添加错误样式
+            passwordInput.style.borderColor = '#ef4444';
+            passwordInput.style.boxShadow = '0 0 0 3px rgba(239, 68, 68, 0.1)';
+        }
+    });
+    
+    document.getElementById('passwordCancelBtn').addEventListener('click', hidePasswordModal);
+    
+    // 密码输入框回车提交
+    document.getElementById('passwordInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            document.getElementById('passwordSubmitBtn').click();
+        }
+    });
     
     console.log('✅ 事件监听器设置完成');
 }
 
 // ========== 初始化函数 ==========
 function init() {
-    console.log('========== 位置信息服务初始化开始 ==========');
+    console.log('========== 位置精灵服务初始化开始 ==========');
     
     try {
         initSupabase();
@@ -643,7 +710,7 @@ function init() {
             }
         }, 3000);
         
-        console.log('✅ 位置信息服务初始化完成');
+        console.log('✅ 位置精灵服务初始化完成');
         
     } catch (error) {
         console.error('❌ 初始化过程中发生错误:', error);
@@ -659,13 +726,15 @@ if (document.readyState === 'loading') {
 }
 
 // ========== 导出到全局 ==========
-window.LocationService = {
+window.LocationSprite = {
     supabaseClient,
     currentLocation,
     getLocation,
-    saveLocationToDatabase,
+    autoSaveLocation,
     loadDatabaseData,
     deleteLocation,
     clearAllData,
-    init
+    init,
+    verifyPassword,
+    isPasswordVerified: () => isPasswordVerified
 };
